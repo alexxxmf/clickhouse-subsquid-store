@@ -1,6 +1,6 @@
 {
   "name": "@subsquid/clickhouse-store",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Production-ready ClickHouse adapter for Subsquid with hot/cold architecture and automatic reorg handling",
   "keywords": [
     "subsquid",
