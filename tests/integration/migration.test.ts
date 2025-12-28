@@ -149,8 +149,8 @@ describe('Migration Flow', () => {
 
       const finalBlocks = [...validBlocks, ...newBlocks]
 
-      expect(finalBlocks).toHaveLength(5) // 2 valid + 3 new
-      expect(finalBlocks[2].hash).toBe('0xNEW1')
+      expect(finalBlocks).toHaveLength(6) // 3 valid (95,96,97) + 3 new
+      expect(finalBlocks[2].hash).toBe('0xc')
     })
 
     it('should continue migration after reorg', () => {
