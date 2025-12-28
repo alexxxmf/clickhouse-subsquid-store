@@ -1,0 +1,61 @@
+{
+  "name": "@subsquid/clickhouse-store",
+  "version": "1.0.0",
+  "description": "Production-ready ClickHouse adapter for Subsquid with hot/cold architecture and automatic reorg handling",
+  "keywords": [
+    "subsquid",
+    "clickhouse",
+    "blockchain",
+    "indexer",
+    "evm",
+    "database",
+    "hot-cold",
+    "reorg-handling"
+  ],
+  "author": "Alex Moro Fernandez",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexmf1990/clickhouse-subsquid-store.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexmf1990/clickhouse-subsquid-store/issues"
+  },
+  "homepage": "https://github.com/alexmf1990/clickhouse-subsquid-store#readme",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "peerDependencies": {
+    "@clickhouse/client": "^1.14.0",
+    "@subsquid/evm-processor": "^1.19.0"
+  },
+  "devDependencies": {
+    "@clickhouse/client": "^1.14.0",
+    "@subsquid/evm-processor": "^1.19.0",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.50.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.0.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "~5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

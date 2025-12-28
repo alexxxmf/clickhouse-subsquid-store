@@ -1,0 +1,14 @@
+src/
+tests/
+examples/
+docs/
+.github/
+*.log
+*.tsbuildinfo
+tsconfig.json
+tsconfig.build.json
+jest.config.js
+.eslintrc.js
+.prettierrc
+.git
+.gitignore
