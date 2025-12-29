@@ -1,5 +1,5 @@
 {
-  "name": "clickhouse-store",
+  "name": "clickhouse-subsquid-store",
   "version": "0.1.0",
   "description": "Production-ready ClickHouse adapter for Subsquid with hot/cold architecture and automatic reorg handling",
   "keywords": [
@@ -16,12 +16,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/alexmf1990/clickhouse-subsquid-store.git"
+    "url": "https://github.com/alexxxmf/clickhouse-subsquid-store.git"
   },
   "bugs": {
-    "url": "https://github.com/alexmf1990/clickhouse-subsquid-store/issues"
+    "url": "https://github.com/alexxxmf/clickhouse-subsquid-store/issues"
   },
-  "homepage": "https://github.com/alexmf1990/clickhouse-subsquid-store#readme",
+  "homepage": "https://github.com/alexxxmf/clickhouse-subsquid-store#readme",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
