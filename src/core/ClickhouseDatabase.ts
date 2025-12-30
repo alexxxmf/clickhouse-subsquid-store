@@ -87,6 +87,10 @@ export class ClickhouseDatabase {
   private migrationHooks?: MigrationHooks
   private blocksSinceLastMigration: number = 0
 
+  // Hot blocks staleness detection
+  private staleHotBlocksThresholdMs: number
+  private trustHotBlocksOnQuickRestart: boolean
+
   constructor(options: ClickhouseDatabaseOptions) {
     this.client = options.client
     this.stateTable = options.stateTable || 'squid_processor_status'
@@ -103,6 +107,10 @@ export class ClickhouseDatabase {
     this.migrationInterval = options.migrationInterval ?? 30
     this.migrationOnFinality = options.migrationOnFinality ?? false
     this.migrationHooks = options.migrationHooks
+
+    // Hot blocks staleness detection configuration
+    this.staleHotBlocksThresholdMs = options.staleHotBlocksThresholdMs ?? 600000 // 10 minutes
+    this.trustHotBlocksOnQuickRestart = options.trustHotBlocksOnQuickRestart ?? true
 
     // Initialize ValidBlocksManager for cold/hot reorg handling
     this.validBlocksManager = new ValidBlocksManager(
@@ -337,6 +345,12 @@ export class ClickhouseDatabase {
       top: this.hotBlocks,
     })
 
+    // During catchup mode, data goes directly to cold tables
+    // Update cold_status to reflect this (fixes the rollback bug)
+    if (!this.isAtChainTip) {
+      await this.updateColdStatus(info.nextHead.height, info.nextHead.hash)
+    }
+
     // Record metrics
     globalMetrics.recordBlocksProcessed(1, true)
 
@@ -541,84 +555,94 @@ export class ClickhouseDatabase {
   }
 
   /**
-   * Detect and rollback stale hot blocks on startup
+   * Detect and rollback stale hot blocks on startup (smart restart logic)
    *
-   * When the indexer stops at chain tip with hot (unfinalized) blocks and restarts
-   * after some time, those blocks may have been reorged away. Subsquid's runner
-   * validates block hashes BEFORE our code runs, causing "block not found" errors.
+   * NEW BEHAVIOR:
+   * - Quick restarts (< threshold): Trust hot blocks, resume immediately
+   * - Long downtimes (> threshold): Clear hot blocks, rollback to last indexed height
+   * - NEVER touches cold data (it's canonical and can't be reorged)
    *
-   * Solution: Always rollback to finalized height on startup if we have hot blocks.
-   * This is safe because:
-   * 1. Finalized blocks are guaranteed to still exist on chain
-   * 2. We only lose a few unfinalized blocks (which we'd lose anyway with a reorg)
-   * 3. The processor will re-index those blocks from finalized height
+   * This prevents losing hours of indexing work on quick restarts while still
+   * handling true staleness after extended downtimes.
    *
-   * @returns New state rolled back to finalized height, or null if no rollback needed
+   * @returns New state with hot blocks cleared if stale, or null if no rollback needed
    */
   private async detectAndRollbackStaleHotBlocks(state: DatabaseState): Promise<DatabaseState | null> {
     const hotBlockCount = state.top.length
-    const lastIndexedHeight = state.height
 
-    // Step 1: Get the cold status (height + hash) - this is our safe checkpoint
-    const coldStatus = await this.getColdStatus()
-
-    // If no cold status exists, fall back to querying cold tables for height only
-    // This handles the case where we're upgrading from before cold_status existed
-    let coldHeight: number
-    let coldHash: string
-
-    if (coldStatus) {
-      coldHeight = coldStatus.height
-      coldHash = coldStatus.hash
-    } else {
-      coldHeight = await this.getLatestColdBlockHeight()
-      coldHash = '' // No hash available - will need manual intervention or fresh start
-    }
-
-    // Check if rollback is needed:
-    // 1. We have hot blocks (they could be stale after restart)
-    // 2. OR stored height > cold height (gap exists, likely from incomplete previous rollback)
-    const hasHotBlocks = hotBlockCount > 0
-    const heightBeyondCold = lastIndexedHeight > coldHeight && coldHeight >= 0
-
-    if (!hasHotBlocks && !heightBeyondCold) {
+    // If no hot blocks, nothing to check
+    if (hotBlockCount === 0) {
       return null
     }
 
-    console.log(`⚠️  STALE DATA DETECTED - ROLLBACK REQUIRED:`)
-    console.log(`   Last indexed: ${lastIndexedHeight} (hash: ${state.hash?.slice(0, 10) || 'empty'}...)`)
-    console.log(`   Cold status: height=${coldHeight}, hash=${coldHash?.slice(0, 10) || 'none'}...`)
+    // If user disabled quick restart trust, always clear hot blocks (old behavior)
+    if (!this.trustHotBlocksOnQuickRestart) {
+      console.log(`⚠️  trustHotBlocksOnQuickRestart=false - clearing hot blocks`)
+      await this.clearHotBlocksOnly()
+      return this.buildRolledBackState(state)
+    }
+
+    // Check downtime using last_run timestamp
+    const lastRunTimestamp = await this.getLastRunTimestamp()
+
+    if (lastRunTimestamp === null) {
+      // No timestamp available (old database or first run with new code)
+      // Default to cautious behavior: clear hot blocks
+      console.log(`⚠️  No last_run timestamp - clearing hot blocks (first run or legacy database)`)
+      await this.clearHotBlocksOnly()
+      return this.buildRolledBackState(state)
+    }
+
+    const downtime = Date.now() - lastRunTimestamp
+    const downtimeMinutes = Math.floor(downtime / 60000)
+    const thresholdMinutes = Math.floor(this.staleHotBlocksThresholdMs / 60000)
+
+    console.log(`🔍 Restart detection:`)
+    console.log(`   Downtime: ${downtimeMinutes} minutes`)
+    console.log(`   Threshold: ${thresholdMinutes} minutes`)
     console.log(`   Hot blocks: ${hotBlockCount}`)
-    if (heightBeyondCold) {
-      console.log(`   ⚠️  Height ${lastIndexedHeight} is beyond cold data ${coldHeight} - gap of ${lastIndexedHeight - coldHeight} blocks`)
+
+    // Quick restart - trust hot blocks
+    if (downtime < this.staleHotBlocksThresholdMs) {
+      console.log(`✅ Quick restart detected - trusting ${hotBlockCount} hot blocks`)
+      console.log(`   Subsquid will detect and handle any reorgs automatically`)
+      return null // No rollback needed
     }
 
-    if (!coldHash) {
-      console.log(`   ⚠️  No cold hash available - this is a legacy state or fresh database`)
-      console.log(`   → Rolling back to height ${coldHeight} with empty hash (Subsquid will verify)`)
-    } else {
-      console.log(`   → Rolling back to cold checkpoint: block ${coldHeight}`)
-    }
+    // Long downtime - hot blocks might be stale
+    console.log(`⚠️  Long downtime detected - clearing ${hotBlockCount} hot blocks for safety`)
+    await this.clearHotBlocksOnly()
+    return this.buildRolledBackState(state)
+  }
 
-    // Step 2: Clear ALL valid_blocks (we're starting fresh from cold data)
+  /**
+   * Clear ONLY hot tables and valid_blocks (never touches cold data)
+   */
+  private async clearHotBlocksOnly(): Promise<void> {
+    // Step 1: Clear valid_blocks registry
     await this.validBlocksManager.clear()
-    console.log(`   ✓ Cleared all valid_blocks`)
+    console.log(`   ✓ Cleared valid_blocks registry`)
 
-    // Step 3: Delete ALL data from hot tables (start fresh)
+    // Step 2: Clear hot tables
     await this.clearAllHotTables()
+    console.log(`   ✓ Cleared hot tables`)
 
-    // Step 4: Update status table to reflect rollback
+    // IMPORTANT: Cold data is NEVER touched - it's canonical historical data
+  }
+
+  /**
+   * Build a rolled-back state that preserves the last indexed height
+   * This allows resuming from where we left off, just without hot blocks
+   */
+  private buildRolledBackState(state: DatabaseState): DatabaseState {
     const newState: DatabaseState = {
-      height: coldHeight,
-      hash: coldHash, // Use the hash from cold_status if available
-      top: [],  // No hot blocks
-      finalizedHeight: coldHeight,
+      height: state.height,  // Keep last indexed height
+      hash: state.hash,      // Keep last indexed hash
+      top: [],               // Clear hot blocks
+      finalizedHeight: state.finalizedHeight || state.height,
     }
 
-    await this.saveStatus(newState)
-    console.log(`   ✓ Updated status table: height=${coldHeight}, hash=${coldHash?.slice(0, 10) || 'empty'}...`)
-
-    console.log(`✅ Rollback complete. Processor will resume from block ${coldHeight}`)
+    console.log(`   → Resuming from block ${newState.height} (hot blocks cleared)`)
 
     return newState
   }
@@ -715,7 +739,8 @@ export class ClickhouseDatabase {
         parent_hash String,
         hot_blocks String,          -- JSON array of hot block references
         finalized_height Int64,
-        timestamp DateTime64(3) DEFAULT now64(3)
+        timestamp DateTime64(3) DEFAULT now64(3),
+        last_run Int64              -- Timestamp of last run (for staleness detection)
       ) ENGINE = ReplacingMergeTree(timestamp)
       ORDER BY (id)
     `
@@ -796,7 +821,7 @@ export class ClickhouseDatabase {
   private async getLastProcessedBlock(): Promise<DatabaseState> {
     const result = await this.client.query({
       query: `
-        SELECT height, hash, hot_blocks, finalized_height
+        SELECT height, hash, hot_blocks, finalized_height, last_run
         FROM ${this.stateTable} FINAL
         WHERE id = '${this.processorId}'
         ORDER BY timestamp DESC
@@ -830,6 +855,40 @@ export class ClickhouseDatabase {
   }
 
   /**
+   * Get the last run timestamp from status table (for staleness detection)
+   */
+  private async getLastRunTimestamp(): Promise<number | null> {
+    try {
+      const result = await this.client.query({
+        query: `
+          SELECT last_run
+          FROM ${this.stateTable} FINAL
+          WHERE id = '${this.processorId}'
+          ORDER BY timestamp DESC
+          LIMIT 1
+        `,
+        format: 'JSONEachRow',
+      })
+
+      const rows = await result.json<{ last_run?: number | string }>()
+
+      if (rows.length === 0 || !rows[0].last_run) {
+        return null
+      }
+
+      return typeof rows[0].last_run === 'string'
+        ? parseInt(rows[0].last_run, 10)
+        : rows[0].last_run
+    } catch (err: any) {
+      // Column might not exist in old databases
+      if (err.message?.includes('UNKNOWN_IDENTIFIER') || err.message?.includes('last_run')) {
+        return null
+      }
+      throw err
+    }
+  }
+
+  /**
    * Save current indexing state to status table
    */
   private async saveStatus(state: DatabaseState): Promise<void> {
@@ -842,6 +901,8 @@ export class ClickhouseDatabase {
       hash: b.hash,
     }))
 
+    const now = Date.now()
+
     await this.client.insert({
       table: this.stateTable,
       values: [
@@ -852,7 +913,8 @@ export class ClickhouseDatabase {
           parent_hash: (state.top[state.top.length - 1] as any)?.parent || '',
           hot_blocks: JSON.stringify(sanitizedHotBlocks),
           finalized_height: this.finalizedHeight,
-          timestamp: Date.now(),
+          timestamp: now,
+          last_run: now,  // Update last run timestamp
         },
       ],
       format: 'JSONEachRow',

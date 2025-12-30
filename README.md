@@ -130,6 +130,34 @@ Reorg detected → Update ValidBlocks → No expensive DELETEs!
 - Queries filter by valid blocks automatically
 - No slow DELETE operations needed
 
+### Smart Restart Behavior
+
+The library intelligently handles indexer restarts to prevent data loss:
+
+**Quick Restarts (< 10 minutes downtime)**:
+- ✅ Trusts hot blocks - resumes immediately
+- ✅ No data re-indexing needed
+- ✅ Subsquid handles any reorgs automatically
+
+**Long Downtimes (> 10 minutes)**:
+- ⚠️ Clears hot blocks for safety
+- ✅ Keeps all cold data intact
+- ✅ Resumes from last indexed height
+
+**Configurable**:
+```typescript
+const database = new ClickhouseDatabase({
+  // Never clear hot blocks (trust Subsquid's reorg detection)
+  staleHotBlocksThresholdMs: Infinity,
+
+  // Or: Always clear hot blocks (paranoid mode)
+  trustHotBlocksOnQuickRestart: false,
+
+  // Or: Custom threshold (30 minutes)
+  staleHotBlocksThresholdMs: 30 * 60 * 1000,
+})
+```
+
 ## Advanced Usage
 
 ### Custom Migration Hooks
@@ -221,6 +249,8 @@ console.log(`Tables:`, result.tables)
 | `migrationInterval` | `number` | `30` | Migrate every N blocks |
 | `migrationOnFinality` | `boolean` | `false` | Migrate when finality advances |
 | `migrationHooks` | `MigrationHooks` | `undefined` | Custom migration hooks |
+| `staleHotBlocksThresholdMs` | `number` | `600000` (10 min) | Downtime before hot blocks are considered stale |
+| `trustHotBlocksOnQuickRestart` | `boolean` | `true` | Trust hot blocks on quick restarts |
 
 ## Architecture Deep Dive
 

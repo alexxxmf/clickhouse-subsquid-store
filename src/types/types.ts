@@ -72,6 +72,7 @@ export interface StatusRow {
   hot_blocks: string        // JSON serialized BlockRef[]
   finalized_height: number
   timestamp: number
+  last_run: number          // Timestamp of last processor run (for staleness detection)
 }
 
 /**
@@ -150,4 +151,13 @@ export interface ClickhouseDatabaseOptions {
   migrationOnFinality?: boolean // Migrate when finality advances (instead of block count)
                              // Default: false (use block count)
   migrationHooks?: MigrationHooks // Optional hooks for custom migration behavior
+
+  // Hot blocks staleness configuration
+  staleHotBlocksThresholdMs?: number // How long indexer can be down before hot blocks are considered stale
+                             // Default: 600000 (10 minutes)
+                             // Set to 0 to always clear hot blocks on restart
+                             // Set to Infinity to never clear hot blocks (trust Subsquid's reorg detection)
+  trustHotBlocksOnQuickRestart?: boolean // If true, trust hot blocks if downtime < threshold
+                             // Default: true
+                             // If false, always clear hot blocks on restart (old behavior)
 }
