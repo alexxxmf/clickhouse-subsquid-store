@@ -62,6 +62,7 @@ export class ClickhouseDatabase {
   private hotBlocks: BlockRef[] = []
   readonly supportsHotBlocks = true
   private finalizedHeight: number = -1
+  private finalizedHash: string = ''
   private supportHotBlocks: boolean
   private hotBlocksDepth: number
   private network: string
@@ -257,11 +258,10 @@ export class ClickhouseDatabase {
       )
     }
 
-    // Initialize internal state
-    // FIX: Use the actual stored finalized height, not just the latest indexed block
-    // This is critical for proper hot blocks recovery - Subsquid's HotProcessor
-    // expects consecutive blocks and validates this on construction
-    this.finalizedHeight = state.finalizedHeight ?? state.height
+    // Initialize internal state from recovered state
+    // state.height/hash are now the finalized block (base of hot chain)
+    this.finalizedHeight = state.height
+    this.finalizedHash = state.hash
     this.hotBlocks = state.top
 
     // Initialize ValidBlocksManager (loads existing valid blocks from DB)
@@ -291,7 +291,8 @@ export class ClickhouseDatabase {
     const staleRollback = await this.detectAndRollbackStaleHotBlocks(state)
     if (staleRollback) {
       state = staleRollback
-      this.finalizedHeight = state.finalizedHeight ?? state.height
+      this.finalizedHeight = state.height
+      this.finalizedHash = state.hash
       this.hotBlocks = state.top
     }
 
@@ -335,8 +336,9 @@ export class ClickhouseDatabase {
     // Flush all buffered inserts to ClickHouse
     await this.flushStore(store)
 
-    // Update finalized height to latest block
+    // Update finalized height and hash to latest block
     this.finalizedHeight = info.nextHead.height
+    this.finalizedHash = info.nextHead.hash
 
     // Save updated status
     await this.saveStatus({
@@ -371,9 +373,10 @@ export class ClickhouseDatabase {
     // Track previous finality for migration trigger
     const previousFinalizedHeight = this.finalizedHeight
 
-    // Update finalized height
+    // Update finalized height and hash
     if (info.finalizedHead.height > this.finalizedHeight) {
       this.finalizedHeight = info.finalizedHead.height
+      this.finalizedHash = info.finalizedHead.hash
       console.log(`   ✓ Finalized up to block ${info.finalizedHead.height}`)
 
       // Remove finalized blocks from hot list
@@ -739,6 +742,7 @@ export class ClickhouseDatabase {
         parent_hash String,
         hot_blocks String,          -- JSON array of hot block references
         finalized_height Int64,
+        finalized_hash String,      -- Hash of the finalized block (for proper recovery)
         timestamp DateTime64(3) DEFAULT now64(3),
         last_run Int64              -- Timestamp of last run (for staleness detection)
       ) ENGINE = ReplacingMergeTree(timestamp)
@@ -821,7 +825,7 @@ export class ClickhouseDatabase {
   private async getLastProcessedBlock(): Promise<DatabaseState> {
     const result = await this.client.query({
       query: `
-        SELECT height, hash, hot_blocks, finalized_height, last_run
+        SELECT height, hash, hot_blocks, finalized_height, finalized_hash, last_run
         FROM ${this.stateTable} FINAL
         WHERE id = '${this.processorId}'
         ORDER BY timestamp DESC
@@ -846,11 +850,17 @@ export class ClickhouseDatabase {
         }))
       : []
 
+    // FIX: Return finalized height/hash as the base, not the tip
+    // Subsquid expects [state, ...state.top] to form consecutive blocks
+    // state.height must be the BASE (finalized), and top starts at base+1
+    const finalizedHeight = row.finalized_height ? Number(row.finalized_height) : Number(row.height)
+    const finalizedHash = row.finalized_hash || row.hash || ''
+
     return {
-      height: Number(row.height),
-      hash: row.hash || '',
+      height: finalizedHeight,
+      hash: finalizedHash,
       top: hotBlocks,
-      finalizedHeight: row.finalized_height ? Number(row.finalized_height) : undefined,
+      finalizedHeight,
     }
   }
 
@@ -913,6 +923,7 @@ export class ClickhouseDatabase {
           parent_hash: (state.top[state.top.length - 1] as any)?.parent || '',
           hot_blocks: JSON.stringify(sanitizedHotBlocks),
           finalized_height: this.finalizedHeight,
+          finalized_hash: this.finalizedHash,
           timestamp: now,
           last_run: now,  // Update last run timestamp
         },

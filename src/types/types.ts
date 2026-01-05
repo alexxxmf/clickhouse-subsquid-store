@@ -71,6 +71,7 @@ export interface StatusRow {
   parent_hash: string
   hot_blocks: string        // JSON serialized BlockRef[]
   finalized_height: number
+  finalized_hash: string    // Hash of the finalized block (for proper recovery)
   timestamp: number
   last_run: number          // Timestamp of last processor run (for staleness detection)
 }
