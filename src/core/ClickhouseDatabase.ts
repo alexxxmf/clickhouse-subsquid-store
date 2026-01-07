@@ -14,6 +14,7 @@ import type {
   MigrationResult,
   MigrationContext,
   MigrationHooks,
+  TransformRowsContext,
 } from '../types/types'
 import { readdirSync } from 'fs'
 import { join } from 'path'
@@ -1278,15 +1279,48 @@ export class ClickhouseDatabase {
 
         if (rowsToMigrate === 0) continue
 
-        // INSERT to cold table
-        await this.client.command({
-          query: `
-            INSERT INTO ${coldTable}
-            SELECT * FROM ${hotTable}
-            WHERE ${this.heightColumnName} <= {cutoff:Int64}
-          `,
-          query_params: { cutoff: cutoffHeight },
-        })
+        // Check if transformRows hook is provided
+        if (this.migrationHooks?.transformRows) {
+          // Load rows into memory for transformation
+          const selectResult = await this.client.query({
+            query: `SELECT * FROM ${hotTable} WHERE ${this.heightColumnName} <= {cutoff:Int64}`,
+            query_params: { cutoff: cutoffHeight },
+            format: 'JSONEachRow',
+          })
+          let rows = await selectResult.json<Record<string, any>>()
+
+          // Build transform context
+          const transformContext: TransformRowsContext = {
+            client: this.client,
+            table,
+            hotTable,
+            coldTable,
+            cutoffHeight,
+            network: this.network,
+          }
+
+          // Transform rows
+          rows = await this.migrationHooks.transformRows(rows, transformContext)
+
+          // INSERT transformed rows (if any remain after transformation)
+          if (rows.length > 0) {
+            await this.client.insert({
+              table: coldTable,
+              values: rows,
+              format: 'JSONEachRow',
+            })
+          }
+        } else {
+          // Default: efficient direct INSERT (no memory overhead)
+          await this.client.command({
+            query: `
+              INSERT INTO ${coldTable}
+              SELECT * FROM ${hotTable}
+              WHERE ${this.heightColumnName} <= {cutoff:Int64}
+            `,
+            query_params: { cutoff: cutoffHeight },
+          })
+        }
 
         // Verify: count rows inserted to cold (recent rows with height <= cutoff)
         // Note: Can't easily verify exact count due to ReplacingMergeTree deduplication

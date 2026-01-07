@@ -18,6 +18,7 @@ export type {
   MigrationResult,
   MigrationContext,
   MigrationHooks,
+  TransformRowsContext,
 
   // Store types
   Store,

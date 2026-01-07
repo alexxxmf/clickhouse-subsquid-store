@@ -101,6 +101,18 @@ export interface MigrationContext {
 }
 
 /**
+ * Context provided to transformRows hook during migration
+ */
+export interface TransformRowsContext {
+  client: any                // ClickHouseClient for querying (e.g., price lookups)
+  table: string              // Base table name (e.g., 'swaps')
+  hotTable: string           // Full hot table name (e.g., 'ethereum_hot_swaps')
+  coldTable: string          // Full cold table name (e.g., 'ethereum_cold_swaps')
+  cutoffHeight: number       // Block height cutoff for this migration
+  network: string            // Network name (e.g., 'ethereum', 'base')
+}
+
+/**
  * Hooks for customizing migration behavior
  */
 export interface MigrationHooks {
@@ -119,6 +131,30 @@ export interface MigrationHooks {
    * Custom migration logic (replaces default migrateHotToCold)
    */
   customMigration?: (database: any) => Promise<MigrationResult>
+
+  /**
+   * Transform rows in-flight during migration (before INSERT to cold)
+   *
+   * When provided, rows are loaded into memory, transformed, then inserted.
+   * When not provided, uses efficient direct INSERT INTO ... SELECT ...
+   *
+   * Use cases:
+   * - Enrich data with additional lookups (e.g., token prices)
+   * - Filter out unwanted rows
+   * - Normalize or clean data before cold storage
+   *
+   * @example
+   * transformRows: async (rows, ctx) => {
+   *   if (ctx.table !== 'swaps') return rows; // Only transform swaps
+   *   const exoticSwaps = rows.filter(r => r.eth_price_usd === 0);
+   *   // Lookup prices and enrich...
+   *   return rows;
+   * }
+   */
+  transformRows?: <T extends Record<string, any>>(
+    rows: T[],
+    context: TransformRowsContext
+  ) => Promise<T[]>
 }
 
 /**
